@@ -49,6 +49,7 @@ DMA_HandleTypeDef hdma_adc1;
 
 TIM_HandleTypeDef htim4;
 
+DMA_HandleTypeDef hdma_memtomem_dma1_channel2;
 osThreadId defaultTaskHandle;
 uint32_t defaultTaskBuffer[ 150 ];
 osStaticThreadDef_t defaultTaskControlBlock;
@@ -315,12 +316,28 @@ static void MX_TIM4_Init(void)
 
 /**
   * Enable DMA controller clock
+  * Configure DMA for memory to memory transfers
+  *   hdma_memtomem_dma1_channel2
   */
 static void MX_DMA_Init(void)
 {
 
   /* DMA controller clock enable */
   __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* Configure DMA request hdma_memtomem_dma1_channel2 on DMA1_Channel2 */
+  hdma_memtomem_dma1_channel2.Instance = DMA1_Channel2;
+  hdma_memtomem_dma1_channel2.Init.Direction = DMA_MEMORY_TO_MEMORY;
+  hdma_memtomem_dma1_channel2.Init.PeriphInc = DMA_PINC_ENABLE;
+  hdma_memtomem_dma1_channel2.Init.MemInc = DMA_MINC_ENABLE;
+  hdma_memtomem_dma1_channel2.Init.PeriphDataAlignment = DMA_PDATAALIGN_HALFWORD;
+  hdma_memtomem_dma1_channel2.Init.MemDataAlignment = DMA_MDATAALIGN_HALFWORD;
+  hdma_memtomem_dma1_channel2.Init.Mode = DMA_NORMAL;
+  hdma_memtomem_dma1_channel2.Init.Priority = DMA_PRIORITY_HIGH;
+  if (HAL_DMA_Init(&hdma_memtomem_dma1_channel2) != HAL_OK)
+  {
+    Error_Handler( );
+  }
 
   /* DMA interrupt init */
   /* DMA1_Channel1_IRQn interrupt configuration */
@@ -397,7 +414,11 @@ static HAL_StatusTypeDef FLASH_DMA_Write(uint32_t Address, uint32_t Data)
 			/* Write data to the flash address - currently not using DMA */
 			Address = Address + (2U * index);
 			Data = (uint16_t)(Data >> (16U * index));
-			*(__IO uint16_t*)Address = Data;
+			/* Use CPU */
+			// *(__IO uint16_t*)Address = Data;
+			/* Use DMA */
+			HAL_DMA_Start(&hdma_memtomem_dma1_channel2, (uint32_t)&Data, Address, 1);
+			while (HAL_DMA_PollForTransfer(&hdma_memtomem_dma1_channel2, HAL_DMA_FULL_TRANSFER, 100) != HAL_OK);
 			/* End write to flash */
 			
 			/* Wait for last operation to be completed */
@@ -438,7 +459,13 @@ void StartDefaultTask(void const * argument)
 	
 	rc = HAL_TIM_Base_Start_IT(&htim4);
 	assert(rc == HAL_OK && "Cannot start TIM4 clock for ADC sampling application");
-  for(;;)
+  
+	pEraseInit.Banks = FLASH_BANK_1;
+	pEraseInit.NbPages = 1;
+	pEraseInit.PageAddress = FLASH_PAGE_X_OFFSET(50);
+	pEraseInit.TypeErase = FLASH_TYPEERASE_PAGES;
+	
+	for(;;)
   {
 		// event.value.v hold the actual message (eg. the ADC1 data)
 		osEvent event = osMessageGet(ADC_QNameHandle, osWaitForever);
@@ -446,14 +473,10 @@ void StartDefaultTask(void const * argument)
 		// Unlock flash
 		HAL_FLASH_Unlock();
 		// Erase first
-		pEraseInit.Banks = FLASH_BANK_1;
-		pEraseInit.NbPages = 1;
-		pEraseInit.PageAddress = FLASH_PAGE_X_OFFSET(50);
-		pEraseInit.TypeErase = FLASH_TYPEERASE_PAGES;
 		HAL_FLASHEx_Erase(&pEraseInit, &PageError);
 		// Write to flash
-		HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, FLASH_PAGE_X_OFFSET(50), event.value.v);
-		// Check the incomplete FLASH_DMA_Write, it's derived from HAL_FLASH_Program
+		// HAL function to write to FLASH using CPU - HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, FLASH_PAGE_X_OFFSET(50), event.value.v);
+		FLASH_DMA_Write(FLASH_PAGE_X_OFFSET(50), event.value.v);
 		// Lock flash
 		HAL_FLASH_Lock();
 		
